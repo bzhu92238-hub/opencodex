@@ -367,6 +367,7 @@ export async function executeResponsesSidecars(
       route.provider = rotated;
       try { await resolveCopilotSelection(retryParsed ?? parsed); }
       catch (error) { // Keep the sidecar's original refusal when replacement negotiation fails.
+        if (originalResponse) sealCredentialRefusal(logCtx, originalResponse.status, recoveryKind);
         noteSidecarScopeDenial(error);
         return null;
       }
@@ -407,11 +408,13 @@ export async function executeResponsesSidecars(
         const snapshot = await failoverAccountSnapshot(route.providerName, nextAccountId);
         if (route.providerName !== "kiro") transportState.genericFailovers += 1;
         if (!await applyFailoverSnapshot(snapshot, retryParsed)) {
+          if (originalResponse) sealCredentialRefusal(logCtx, originalResponse.status, "oauth-account-429");
           hop.permit?.release();
           return null;
         }
         if (route.providerName === "kiro") transportState.genericFailovers += 1;
       } catch (error) {
+        if (originalResponse) sealCredentialRefusal(logCtx, originalResponse.status, "oauth-account-429");
         noteSidecarScopeDenial(error);
         hop.permit?.release();
         return null;

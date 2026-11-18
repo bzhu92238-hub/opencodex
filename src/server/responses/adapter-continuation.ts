@@ -1,4 +1,5 @@
 import { credentialRecoveryStatus } from "../request-log-attempt-recovery";
+import { sealCredentialRefusal } from "../credential-recovery-attempt";
 import { carryProxyError, proxyErrorPresentation, isProxyError, rememberProxyErrorMessage } from "../../lib/client-error-body";
 import { providerAffinityGenerationIsCurrent } from "../../providers/api-key-selection";
 import { bindAnthropicRejectionResponse } from "../../adapters/anthropic-rejection-memo";
@@ -449,6 +450,7 @@ export function createAdapterContinuations(
           promptCacheKey: nextParsed.options.promptCacheKey,
         });
         if (rotated) {
+          sealCredentialRefusal(logCtx, response.status, "key-429");
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           route.provider = rotated;
           try { await transportState.resolveCopilotSelection(nextParsed); }
@@ -499,6 +501,9 @@ export function createAdapterContinuations(
         if (!nextAccountId) hop.permit?.release();
         if (nextAccountId) {
           captureRefusalAttribution();
+          const recovery = response.status === 401 ? "oauth-401"
+            : response.status === 403 ? "oauth-account-403" : "anthropic-oauth-429";
+          sealCredentialRefusal(logCtx, response.status, recovery);
           try {
             const admitted = await commitResolvedOAuthSelection(await anthropicRoutingFor(anthropicInstance).getAnthropicPoolAccessSnapshot(nextAccountId));
             if (!admitted) throw new Error("OAuth selection changed during recovery");
@@ -522,8 +527,7 @@ export function createAdapterContinuations(
               });
             }
 
-            nextContinuationRecoveryKind = response.status === 401 ? "oauth-401"
-              : response.status === 403 ? "oauth-account-403" : "anthropic-oauth-429";
+            nextContinuationRecoveryKind = recovery;
             sendBudgetState.pendingHopPermit = hop.permit;
             refusalPendingReplay = response;
             continue;
@@ -588,6 +592,7 @@ export function createAdapterContinuations(
         )) noteAttemptRecoveryWithheld(logCtx.activeAttempt, "rotation-send-budget");
         if (!nextAccountId) hop.permit?.release();
         if (nextAccountId) {
+          sealCredentialRefusal(logCtx, response.status, "oauth-account-429");
           try {
             // The FULL snapshot through the shared helper, never a bare bearer: Antigravity
             // pairs an account-matched projectId with its token and Kiro carries routing
@@ -678,6 +683,7 @@ export function createAdapterContinuations(
         )) noteAttemptRecoveryWithheld(logCtx.activeAttempt, "rotation-send-budget");
         if (!nextAccountId) hop.permit?.release();
         if (nextAccountId) {
+          sealCredentialRefusal(logCtx, response.status, "oauth-account-429");
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           try {
             // The FULL snapshot through the shared helper, never a bare bearer: Antigravity
