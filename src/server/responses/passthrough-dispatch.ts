@@ -1356,7 +1356,7 @@ export async function preparePassthroughExchange(
       && !sendBudgetExhausted(transientSendAttempts())
     ) {
       oauth401ReplayAttempted = transportState.oauth401ReplayAttempted = true;
-      const stageReplayAttempt = transportState.createOAuthReplayAttempt();
+      const stageReplayAttempt = transportState.createOAuthReplayAttempt(request);
       try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
       let refreshed: OAuthAccessSnapshot;
       try {
