@@ -1414,8 +1414,6 @@ export async function preparePassthroughExchange(
           translatorBudget,
         });
         refreshRequestToolAliases(request);
-        recordAdapterReasoning(logCtx, request);
-        recordAdapterTier(logCtx, request);
       } catch (err) {
         if (err instanceof CodexInstallationIdUnavailableError) return transportFailureResponse(err);
         upstream.abort();
@@ -1430,7 +1428,7 @@ export async function preparePassthroughExchange(
       try {
         upstreamResponse = await fetchWithTransientRetry(
           recovery => {
-            const commitAttempt = stageReplayAttempt(refreshedAdapter.name, passthroughEstimate, recovery);
+            const commitAttempt = stageReplayAttempt(request, refreshedAdapter.name, passthroughEstimate, recovery);
             return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
               method: request.method,
               headers: request.headers,
