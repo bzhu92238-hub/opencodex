@@ -1399,7 +1399,6 @@ export async function prepareAdapterExchange(
           hop.permit?.release();
           break;
         }
-        const replay = transportState.createCredentialReplayAttempt(lastSentRequest, upstreamResponse.status, "oauth-account-429");
         try {
           const admitted = await commitResolvedOAuthSelection(await anthropicRoutingFor(anthropicInstance).getAnthropicPoolAccessSnapshot(nextAccountId));
           if (!admitted) throw new Error("OAuth selection changed during recovery");
@@ -1498,6 +1497,7 @@ export async function prepareAdapterExchange(
           hop.permit?.release();
           break;
         }
+        const replay = transportState.createCredentialReplayAttempt(lastSentRequest, upstreamResponse.status, "oauth-account-429");
         try {
           // The FULL snapshot, not just the bearer: Antigravity pairs an account-matched
           // projectId with its token and Kiro carries routing metadata, so a token-only swap
