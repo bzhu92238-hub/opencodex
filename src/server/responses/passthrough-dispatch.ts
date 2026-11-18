@@ -227,7 +227,7 @@ export async function preparePassthroughExchange(
     | "genericFailovers"
     | "genericFailoverLimit"
     | "applyFailoverSnapshot"
-    | "noteRoutedAttemptSend" | "deferPhysicalAttribution"
+    | "noteRoutedAttemptSend" | "createOAuthReplayAttempt" | "deferPhysicalAttribution"
     | "selectionIsCurrent"
     | "requestBindings"
   >,
@@ -1065,7 +1065,7 @@ export async function preparePassthroughExchange(
     // published ladder one refused rung at a time; the request send budget bounds those retries.
     const reasoningEffortDowngradeGuard: { attempted: boolean } = { attempted: false };
     /** Rebind the refreshed wire before transferring this request to the Chat pipeline. */
-    function bindRefreshedAdapter(refreshedAdapter: typeof transportState.adapter) {
+    function bindRefreshedAdapter(refreshedAdapter: typeof transportState.adapter, publishAttempt = true) {
       bindRouteReasoningReplayScope({
         parsed,
         providerName: route.providerName,
@@ -1073,6 +1073,7 @@ export async function preparePassthroughExchange(
         adapterName: refreshedAdapter.name,
         oauthCredentialSnapshot: transportState.replayOAuthCredentialSnapshot,
       });
+      if (!publishAttempt) return;
       if (!transportState.deferPhysicalAttribution) {
         logCtx.providerAdapter = refreshedAdapter.name;
         sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, refreshedAdapter.name, logCtx.accountLogLabel);
@@ -1355,6 +1356,7 @@ export async function preparePassthroughExchange(
       && !sendBudgetExhausted(transientSendAttempts())
     ) {
       oauth401ReplayAttempted = transportState.oauth401ReplayAttempted = true;
+      const stageReplayAttempt = transportState.createOAuthReplayAttempt();
       try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
       let refreshed: OAuthAccessSnapshot;
       try {
@@ -1397,7 +1399,7 @@ export async function preparePassthroughExchange(
         resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire, route.staticPolicy),
         config.cacheRetention,
       );
-      bindRefreshedAdapter(refreshedAdapter);
+      bindRefreshedAdapter(refreshedAdapter, false);
       if (!("passthrough" in refreshedAdapter) || !refreshedAdapter.passthrough) {
         if (route.providerName === "github-copilot" && refreshedAdapter.name === "openai-chat") {
           return handoffToChat(refreshedAdapter);
@@ -1428,7 +1430,7 @@ export async function preparePassthroughExchange(
       try {
         upstreamResponse = await fetchWithTransientRetry(
           recovery => {
-            transportState.noteRoutedAttemptSend(passthroughEstimate, recovery ?? "oauth-401");
+            const commitAttempt = stageReplayAttempt(refreshedAdapter.name, passthroughEstimate, recovery);
             return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
               method: request.method,
               headers: request.headers,
@@ -1440,7 +1442,11 @@ export async function preparePassthroughExchange(
                   && responseEffects.plaintextV2AgentMessageToolNames.size === 0
                   ? options.nativeControl : undefined,
                 dispatchOverride: oauthDispatch(request, parsed, "passthrough"),
-                onPhysicalDispatch: recordPhysicalSend(oauthReplayAccounting.onPhysicalDispatch),
+                onPhysicalDispatch: recordPhysicalSend(() => {
+                  upstream.signal.throwIfAborted();
+                  oauthReplayAccounting.onPhysicalDispatch?.();
+                  commitAttempt?.();
+                }),
                 providerName: route.providerName,
                 modelId: route.modelId,
                 onContinuationDispatch,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { saveConfig } from "../../src/config";
 import { XAI_OAUTH_DISCOVERY_URL } from "../../src/oauth/xai";
 import { saveCredential } from "../../src/oauth/store";
 import { XAI_GROK_CLI_BASE_URL } from "../../src/providers/xai-transport";
+import * as requestPacing from "../../src/providers/request-pacing";
 import { readUsageEntries, usageLogPath } from "../../src/usage/log";
 import { startServer } from "../../src/server";
 import type { OcxConfig } from "../../src/types";
@@ -221,6 +222,34 @@ describe("xAI OAuth Responses opt-in upstream 401 replay", () => {
       expect(persisted).not.toContain("fresh-access");
       expect(persisted).not.toContain("xai-test-account");
     } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a refreshed OAuth request refused by pacing has no replacement send", async () => {
+    await seedOAuth();
+    saveConfig(xaiConfig());
+    const observed = installOAuthFetch([401, 200]);
+    const server = startServer(0);
+    const wait = requestPacing.waitForProviderRequestSlot;
+    let refusals = 0;
+    const pacing = spyOn(requestPacing, "waitForProviderRequestSlot").mockImplementation((name, provider, ...rest) => {
+      if (name === "xai" && provider.apiKey === "fresh-access") {
+        refusals += 1;
+        return Promise.reject(new requestPacing.RequestPacingQueueOverloadError("xai", "queue_full", 1));
+      }
+      return wait(name, provider, ...rest);
+    });
+    try {
+      const response = await post(server);
+      expect(response.status).toBe(429);
+      await response.text();
+      expect(refusals).toBe(1);
+      expect(observed.counts.refresh).toBe(1);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access"]);
+      expect(readUsageEntries().at(-1)?.attempts?.map(attempt => attempt.sendCount)).toEqual([1]);
+    } finally {
+      pacing.mockRestore();
       await server.stop(true);
     }
   });
