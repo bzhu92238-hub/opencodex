@@ -939,6 +939,7 @@ export async function prepareResponsesTransport(
           turnScopedPacing: true,
           accountAutoPause: (name, provider, headers) => captureAccountAutoPauseAttempt(name, provider, { config, oauth: binding?.kind === "oauth" ? binding.snapshot : undefined }, headers),
           beforeDispatch: beforePhysicalSend,
+          onPhysicalDispatch: incoming.onGuardedDispatch,
         });
         await run(requestParsed, { ...incoming, pacingSlot: attemptSlot, providerFetch: fetch, beforePhysicalSend }, event => { if (!refused) emit(event); });
       } catch (error) {
