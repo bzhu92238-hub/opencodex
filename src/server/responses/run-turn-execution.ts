@@ -1,6 +1,6 @@
 import { formatClientRetryAfter } from "../../lib/client-retry-after";
 import { mapSpendLedgerStorageError } from "./spend-storage-error";
-import type { ResponsesRequestContext, ResponsesAdmissionState } from "./core-options";
+import { responsesTimeoutProvider, type ResponsesRequestContext, type ResponsesAdmissionState } from "./core-options";
 import type { PreparedResponsesRequest } from "./request-prepare";
 import type { ResponsesTransport } from "./request-transport";
 import type { ResponsesSidecarAuth } from "./request-sidecar-auth";
@@ -822,7 +822,7 @@ export async function executeResponsesRunTurn(
       try {
       void runTurn();
       let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
-      const stallTimeoutSec = wsPlan?.stallTimeoutSec ?? providerStallTimeoutSec(config, route.provider);
+      const stallTimeoutSec = wsPlan?.stallTimeoutSec ?? providerStallTimeoutSec(config, responsesTimeoutProvider(options, route.provider));
       // A disabled watchdog (0) is not a zero preflight: it would commit SSE before Devin's first
       // event and deliver a pre-output 429 in-stream. Fall back to the default finite bound.
       // A key-pool preflight must not outlast the stall budget, or a silent CLI holds the SSE

@@ -26,9 +26,11 @@ so wrapping an unpaced physical send adds no yield between final credential vali
 including `0`, and fall back to the global setting when omitted. On ordinary routed HTTP
 adapter sends and streams, local/public defaults apply when both settings are omitted.
 Responses passthrough uses global budgets, including header timing in the shared OAuth/key
-dispatch. Native Chat/Messages and compact also use global settings. Each `runTurn` adapter owns
-its transport deadlines. The proxy applies the provider stall budget to streaming `runTurn`
-delivery. Buffered `runTurn` has no provider stall watchdog.
+dispatch. Native Chat/Messages and compact also use global settings. The `compaction-v1` marker
+keeps the global budgets when compact hands off to the Responses pipeline, including HTTP
+retries and streaming `runTurn` delivery. Each `runTurn` adapter owns its transport deadlines.
+The proxy applies the provider stall budget to ordinary streaming `runTurn` delivery.
+Buffered `runTurn` has no provider stall watchdog.
 
 The image/video bridge in `src/images/loop.ts` uses 200 seconds for either omitted model budget.
 An explicit zero disables the corresponding model clock, including raw-body inactivity for HTTP
@@ -41,13 +43,14 @@ setting is zero. Load degrades malformed provider values to "inherit" (`leaf-val
 
 Both fields are editor-owned in `src/server/auth-cors.ts`. The shared provider management
 validator requires integers from 0 through 2147483647 ms or 2147483 seconds respectively.
-Canonical OpenAI compares its seed with those two overrides omitted from the comparison copy
-and validates both from the original input.
+Canonical OpenAI validates both overrides from the original input before comparing the seed
+with those two overrides omitted from the comparison copy.
 `src/server/management/provider-overwrite-carry.ts` retains an omitted POST override from
 the latest live same-name row. Its PATCH mask deletes either override on explicit `null` and
 refuses invalid values before persistence. See [Durable provider PATCH](../gui-and-management-api.md#durable-provider-patch).
 `tests/responses/provider-upstream-deadlines.test.ts` covers override, inherit and per-provider
-disable for the header clock, the stall watchdog, the web-search plan and write validation.
+disable for ordinary requests, and the global clocks for compact HTTP retries, buffered bodies
+and streaming `runTurn`. It also covers the web-search plan and write validation.
 `tests/server/management-provider-compat-carry.test.ts` covers canonical POST, POST carry and
 PATCH validation. `tests/images/loop.test.ts` and
 `tests/web-search/web-search-progress-stream.test.ts` cover disabled model timers and cancellation.

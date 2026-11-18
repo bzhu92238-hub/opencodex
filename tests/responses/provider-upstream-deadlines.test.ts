@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { saveConfig } from "../../src/config";
-import { handleResponses } from "../../src/server/responses";
+import { handleResponses, handleResponsesCompact } from "../../src/server/responses";
+import * as adapterResolver from "../../src/server/adapter-resolve";
 import { providerManagementConfigError } from "../../src/server/auth-cors";
 import { parseRequest } from "../../src/responses/parser";
 import { planWebSearch } from "../../src/web-search";
@@ -137,6 +138,117 @@ test("web-search plan sizes its bridge stall from the routed provider's budgets"
   const widened = plan({ ...routed, connectTimeoutMs: 900_000, stallTimeoutSec: 1_200 });
   expect(inherited?.stallTimeoutSec).toBeLessThan(1_200);
   expect(widened?.stallTimeoutSec).toBeGreaterThanOrEqual(1_200);
+});
+
+function compactRequest(model: string, signal?: AbortSignal): Request {
+  return new Request("http://localhost/v1/responses/compact", {
+    method: "POST", headers: { "content-type": "application/json" }, signal,
+    body: JSON.stringify({ model, input: [{ type: "message", role: "user", content: "Keep the task state." }] }),
+  });
+}
+
+for (const overrides of [
+  { connectTimeoutMs: 17_013, stallTimeoutSec: 31 },
+  { connectTimeoutMs: 0, stallTimeoutSec: 0 },
+]) test(`compact HTTP sends, retry and buffered body use global deadlines with provider overrides ${JSON.stringify(overrides)}`, async () => {
+  const release = acquireOwnedSpendHome();
+  clearKeyCooldowns();
+  const config = fixtureConfig({ connectTimeoutMs: 23_011, stallTimeoutSec: 39 }, {
+    ...overrides, transientRetryOn5xx: { attempts: 2 },
+  });
+  const headerBudgets: number[] = [];
+  const budgetsAtSend: number[][] = [];
+  const bodyBudgets = new Set<number>();
+  const originalTimer = globalThis.setTimeout;
+  const clock = spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+    if (delay === 17_013 || delay === 23_011) headerBudgets.push(delay);
+    if (budgetsAtSend.length === 2 && typeof delay === "number") {
+      for (const ms of [31_000, 39_000]) {
+        if (delay > ms - 100 && delay <= ms) bodyBudgets.add(ms);
+      }
+    }
+    return originalTimer(callback, delay, ...args);
+  }) as typeof setTimeout);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    budgetsAtSend.push(headerBudgets.splice(0));
+    if (budgetsAtSend.length === 1) {
+      return Response.json({ error: { message: "temporary upstream failure" } }, { status: 503 });
+    }
+    return Response.json({
+      id: "chatcmpl-fixture", model: "fixture-model",
+      choices: [{ index: 0, message: { role: "assistant", content: "Retain progress and resume the task." }, finish_reason: "stop" }],
+    });
+  }) as typeof fetch;
+  try {
+    saveConfig(config);
+    const response = await handleResponsesCompact(compactRequest("fixture/fixture-model"), config, { model: "", provider: "" });
+    expect({ status: response.status, budgetsAtSend, bodyBudgets: [...bodyBudgets] }).toEqual({
+      status: 200, budgetsAtSend: [[23_011], [23_011]], bodyBudgets: [39_000],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    clock.mockRestore();
+    clearKeyCooldowns();
+    release();
+  }
+});
+
+for (const providerSec of [600, 0]) test(`compact streaming runTurn uses the global stall watchdog with provider override ${providerSec}`, async () => {
+  const release = acquireOwnedSpendHome();
+  const config = fixtureConfig({
+    stallTimeoutSec: 1,
+    combos: { compact: { targets: [{ provider: "fixture", model: "fixture-model" }] } },
+  }, { stallTimeoutSec: providerSec });
+  const entered = Promise.withResolvers<AbortSignal>();
+  const originalResolve = adapterResolver.resolveAdapter;
+  const adapter = spyOn(adapterResolver, "resolveAdapter").mockImplementation((provider, cache) => ({
+    ...originalResolve(provider, cache),
+    async runTurn(_parsed, meta, emit) {
+      const signal = meta.abortSignal!;
+      emit({ type: "text_delta", text: "Starting the summary." });
+      entered.resolve(signal);
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    },
+  }));
+  const originalInterval = globalThis.setInterval;
+  const watchdogArmed = Promise.withResolvers<void>();
+  const beats: Array<() => void> = [];
+  const intervals: Array<ReturnType<typeof setInterval>> = [];
+  const clock = spyOn(globalThis, "setInterval").mockImplementation(((callback, delay, ...args) => {
+    if (delay !== 2_000) return originalInterval(callback, delay, ...args);
+    beats.push(callback as () => void);
+    watchdogArmed.resolve();
+    const handle = originalInterval(() => {}, 2_000_000);
+    intervals.push(handle);
+    return handle;
+  }) as typeof setInterval);
+  const parent = new AbortController();
+  let pending: Promise<Response> | undefined;
+  try {
+    saveConfig(config);
+    pending = handleResponsesCompact(compactRequest("combo/compact", parent.signal), config, { model: "", provider: "" });
+    const [signal] = await Promise.race([
+      Promise.all([entered.promise, watchdogArmed.promise]),
+      pending.then(result => { throw new Error(`runTurn ended before the watchdog started: ${result.status}`); }),
+    ]);
+    // Let compact drain the created/in-progress frames before advancing each heartbeat.
+    for (let tick = 0; tick < 4 && !signal.aborted; tick++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      for (const beat of beats) beat();
+    }
+    expect(signal.aborted).toBe(true);
+    const response = await pending;
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("compaction turn did not complete (status: incomplete)");
+  } finally {
+    parent.abort();
+    await pending?.catch(() => {});
+    adapter.mockRestore();
+    clock.mockRestore();
+    intervals.forEach(clearInterval);
+    release();
+  }
 });
 
 test("management writes reject malformed provider budgets and accept 0 or a positive integer", () => {

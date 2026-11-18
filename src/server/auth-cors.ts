@@ -908,6 +908,10 @@ export function providerManagementConfigError(
   }
   if (name === "chatgpt") return "provider chatgpt is reserved for internal credential compatibility";
   if (name === "openai-multi") return "provider openai-multi is reserved for legacy config migration";
+  const timeoutOverrideError = providerTimeoutOverrideConfigError(raw);
+  if (timeoutOverrideError) {
+    return `provider ${JSON.stringify(redactSecretString(name))} ${timeoutOverrideError}`;
+  }
   if (name === "openai") {
     const entry = getProviderRegistryEntry(name);
     const seed = entry ? providerConfigSeed(entry) : undefined;
@@ -952,7 +956,7 @@ export function providerManagementConfigError(
     // forwardClientHeaders is an editor-managed request-metadata overlay. It is validated
     // separately below and must not make an otherwise canonical OpenAI provider fail the seed check.
     delete canonicalCandidate.forwardClientHeaders;
-    // Timeout overrides are validated on raw below and are independent of the canonical seed.
+    // Timeout overrides are validated above and are independent of the canonical seed.
     delete canonicalCandidate.connectTimeoutMs;
     delete canonicalCandidate.stallTimeoutSec;
     // Canonical ChatGPT keeps WebSocket as the default, but an operator may
@@ -1007,10 +1011,6 @@ export function providerManagementConfigError(
   const requestPacingError = requestPacingConfigError(raw.requestPacing);
   if (requestPacingError) {
     return `provider ${JSON.stringify(redactSecretString(name))} ${requestPacingError}`;
-  }
-  const timeoutOverrideError = providerTimeoutOverrideConfigError(raw);
-  if (timeoutOverrideError) {
-    return `provider ${JSON.stringify(redactSecretString(name))} ${timeoutOverrideError}`;
   }
   const webSearchBridgeError = providerWebSearchBridgeConfigError(raw.webSearchBridge, name, typed);
   if (webSearchBridgeError) {

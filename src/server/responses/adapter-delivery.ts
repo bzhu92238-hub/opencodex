@@ -1,5 +1,5 @@
 import { proxyErrorPresentation, isProxyError, rememberProxyErrorMessage } from "../../lib/client-error-body";
-import type { ResponsesRequestContext } from "./core-options";
+import { responsesTimeoutProvider, type ResponsesRequestContext } from "./core-options";
 import type { PreparedResponsesRequest } from "./request-prepare";
 import type { ResponsesTransport } from "./request-transport";
 import type { ResponsesSidecarAuth } from "./request-sidecar-auth";
@@ -84,7 +84,8 @@ export async function deliverAdapterResponse(
     notifyResponseComplete,
   } = responseEffects;
   const { routedCompaction } = sidecarState;
-  const bodyInactivityMs = resolveStallTimeoutMs(providerStallTimeoutSec(config, route.provider), { localUpstream });
+  const stallTimeoutSec = () => providerStallTimeoutSec(config, responsesTimeoutProvider(options, route.provider));
+  const bodyInactivityMs = resolveStallTimeoutMs(stallTimeoutSec(), { localUpstream });
   const upstreamRequestsStream = parsed.stream || isCanonicalOpenAiForwardProvider(route.provider);
   const recoverThinkingSignature = (events: AsyncIterable<AdapterEvent>): AsyncIterable<AdapterEvent> =>
     thinkingSignatureRecovery.wrap(events, async function* () {
@@ -106,7 +107,7 @@ export async function deliverAdapterResponse(
         return;
       }
       try {
-        const bodyInactivityMs = resolveStallTimeoutMs(providerStallTimeoutSec(config, route.provider), { localUpstream: adapterExchange.localUpstream });
+        const bodyInactivityMs = resolveStallTimeoutMs(stallTimeoutSec(), { localUpstream: adapterExchange.localUpstream });
         const retryEvents = upstreamRequestsStream
           ? readResponseStreamWithInactivity(response, upstream.signal, bodyInactivityMs,
             guarded => transportState.activeAdapter.parseStream(guarded, translatorBudget, logCtx.activeTierMetadata))
@@ -245,7 +246,7 @@ export async function deliverAdapterResponse(
           hideRawReasoning: parsed.options.hideRawReasoning,
           toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, bareCustomToolNames, toolSearchToolNames,
         },
-        stallTimeoutSec: providerStallTimeoutSec(config, route.provider),
+        stallTimeoutSec: stallTimeoutSec(),
         get localUpstream() { return adapterExchange.localUpstream; },
         turnAdmissionLease: options.turnAdmissionLease,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
@@ -263,7 +264,7 @@ export async function deliverAdapterResponse(
         replayCacheScope: parsed._reasoningReplayScope,
         ...(outputItemIds ? { outputItemIds } : {}),
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
-        stallTimeoutSec: providerStallTimeoutSec(config, route.provider),
+        stallTimeoutSec: stallTimeoutSec(),
         get localUpstream() { return adapterExchange.localUpstream; },
         hideThinkingSummary: parsed.options.hideThinkingSummary,
         chatRawReasoningVisible: options.chatRawReasoningVisible,
