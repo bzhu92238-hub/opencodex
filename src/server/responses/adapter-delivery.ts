@@ -58,7 +58,8 @@ export async function deliverAdapterResponse(
   >,
   completionPolicy: Pick<ResponsesCompletionPolicy, "emptyCompletionGuardEnabled">,
   adapterExchange: Pick<AdapterExchange, "upstreamResponse" | "upstream" | "cleanupUpstreamAbort" | "localUpstream" | "thinkingSignatureRecovery" | "refetchThinkingSignature">,
-  continuationState: Pick<AdapterContinuations, "terminalGuardEnabled" | "fetchTerminalGuardContinuation" | "fetchGuardedEmptyCompletionRetry" | "isContinuationBodyStall">,
+  continuationState: Pick<AdapterContinuations, "terminalGuardEnabled" | "fetchTerminalGuardContinuation" | "fetchGuardedEmptyCompletionRetry" | "isContinuationBodyStall"
+    | "noteUpstreamBodyProgress" | "readUpstreamBodyProgress">,
 ): Promise<Response> {
   const { logCtx, options, config } = requestContext;
   const {
@@ -75,6 +76,8 @@ export async function deliverAdapterResponse(
     fetchTerminalGuardContinuation,
     fetchGuardedEmptyCompletionRetry,
     isContinuationBodyStall,
+    noteUpstreamBodyProgress,
+    readUpstreamBodyProgress,
   } = continuationState;
   const { emptyCompletionGuardEnabled } = completionPolicy;
   const {
@@ -110,7 +113,8 @@ export async function deliverAdapterResponse(
         const bodyInactivityMs = resolveStallTimeoutMs(stallTimeoutSec(), { localUpstream: adapterExchange.localUpstream });
         const retryEvents = upstreamRequestsStream
           ? readResponseStreamWithInactivity(response, upstream.signal, bodyInactivityMs,
-            guarded => transportState.activeAdapter.parseStream(guarded, translatorBudget, logCtx.activeTierMetadata))
+            guarded => transportState.activeAdapter.parseStream(guarded, translatorBudget, logCtx.activeTierMetadata),
+            noteUpstreamBodyProgress)
           : (async function* () {
               yield* await readResponseBodyWithInactivity(response, upstream.signal, bodyInactivityMs,
                 guarded => transportState.activeAdapter.parseResponse!(guarded, translatorBudget, logCtx.activeTierMetadata));
@@ -150,6 +154,7 @@ export async function deliverAdapterResponse(
           upstream.signal,
           bodyInactivityMs,
           response => transportState.activeAdapter.parseStream(response, translatorBudget, logCtx.activeTierMetadata, { completedToolBlocks: outputItemIds !== undefined }),
+          noteUpstreamBodyProgress,
         )) {
           options.onCompactionRecoveryAdapterEvent?.(event);
           yield event;
@@ -247,6 +252,7 @@ export async function deliverAdapterResponse(
           toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, bareCustomToolNames, toolSearchToolNames,
         },
         stallTimeoutSec: stallTimeoutSec(),
+        readUpstreamBodyProgress,
         get localUpstream() { return adapterExchange.localUpstream; },
         turnAdmissionLease: options.turnAdmissionLease,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),

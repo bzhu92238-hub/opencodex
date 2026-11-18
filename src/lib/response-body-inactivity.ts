@@ -42,7 +42,7 @@ export function guardResponseBodyInactivity(
   response: Response,
   signal: AbortSignal | undefined,
   timeoutMs: number,
-  options: { explicitBudget?: boolean } = {},
+  options: { explicitBudget?: boolean; onBodyProgress?: () => void } = {},
 ): ResponseBodyInactivityGuard {
   const source = response.body;
   if (!source) return { response, dispose: () => {} };
@@ -143,6 +143,7 @@ export function guardResponseBodyInactivity(
           }
           emptyReads = 0;
           pause();
+          options.onBodyProgress?.();
           controller.enqueue(value);
           return;
         }
@@ -205,8 +206,9 @@ export async function* readResponseStreamWithInactivity<T>(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   parse: (response: Response) => AsyncIterable<T>,
+  onBodyProgress?: () => void,
 ): AsyncGenerator<T> {
-  const guarded = guardResponseBodyInactivity(response, signal, timeoutMs);
+  const guarded = guardResponseBodyInactivity(response, signal, timeoutMs, { onBodyProgress });
   try {
     yield* parse(guarded.response);
   } finally {

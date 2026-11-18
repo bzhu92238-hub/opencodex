@@ -99,6 +99,7 @@ export interface ClientEncodedDelivery {
     toolSearchToolNames?: Set<string>;
   };
   stallTimeoutSec?: number;
+  readUpstreamBodyProgress?: () => number;
   /** Operator-trusted local upstream: an unset stall budget stays disabled there (#5876). */
   localUpstream?: boolean;
   turnAdmissionLease?: AdmissionLease;
@@ -226,6 +227,7 @@ export async function deliverClientEncodedResponse(input: ClientEncodedDelivery)
     translatorBudget,
     ...input.fold,
     ...(input.stallTimeoutSec !== undefined ? { stallTimeoutSec: input.stallTimeoutSec } : {}),
+    readUpstreamBodyProgress: input.readUpstreamBodyProgress,
     get localUpstream() { return input.localUpstream; },
     hooks,
   };

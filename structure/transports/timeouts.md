@@ -25,6 +25,8 @@ so wrapping an unpaced physical send adds no yield between final credential vali
 `providerConnectTimeoutMs` / `providerStallTimeoutSec` return the provider value when it is set,
 including `0`, and fall back to the global setting when omitted. On ordinary routed HTTP
 adapter sends and streams, local/public defaults apply when both settings are omitted.
+The direct Chat and Messages encoders count non-empty HTTP body chunks as stall-watchdog
+activity across adapter legs, including bytes buffered inside an unfinished SSE frame.
 Responses passthrough uses global budgets, including header timing in the shared OAuth/key
 dispatch. Native Chat/Messages and compact also use global settings. The `compaction-v1` marker
 keeps the global budgets when compact hands off to the Responses pipeline, including HTTP
@@ -36,8 +38,9 @@ The image/video bridge in `src/images/loop.ts` uses 200 seconds for either omitt
 An explicit zero disables the corresponding model clock, including raw-body inactivity for HTTP
 and collection inactivity for `runTurn`. Client cancellation and the independent generation
 deadlines still apply. `src/web-search/progress-stream.ts` keeps its separate consumer and
-post-terminal drain deadlines when raw-body inactivity is disabled. Routed web-search model
-sends use the provider header setting. The outer web-search watchdog retains a positive
+post-terminal drain deadlines when raw-body inactivity is disabled. The routed HTTP search loop
+uses the provider header setting and includes it in the outer watchdog budget. The streaming
+`runTurn` search loop sizes its outer watchdog without an HTTP header allowance. Both retain a positive
 budget sized to cover the bridge's component deadlines, including when the provider stall
 setting is zero. Load degrades malformed provider values to "inherit" (`leaf-validators.ts`).
 

@@ -227,6 +227,7 @@ export async function executeResponsesRunTurn(
     wsPlan = !routedCompaction
       ? planWebSearch(config, parsed, false, route.provider, route.modelId, sidecarState.openAiSidecar, {
         admission: options.admission, codexAuthPolicy: options.codexAuthPolicy, providerName: route.providerName,
+        routedTransport: "runTurn",
       })
       : undefined;
   } catch (error) {

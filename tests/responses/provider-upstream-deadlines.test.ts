@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { saveConfig } from "../../src/config";
 import { handleResponses, handleResponsesCompact } from "../../src/server/responses";
+import { clientWireOf } from "../../src/server/inference/client-wire";
 import * as adapterResolver from "../../src/server/adapter-resolve";
 import { providerManagementConfigError } from "../../src/server/auth-cors";
 import { parseRequest } from "../../src/responses/parser";
@@ -9,6 +10,7 @@ import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { clearKeyCooldowns } from "../../src/providers/key-failover";
 import { repoPath } from "../helpers/repo-root";
+import { createTestTranslatorBudget } from "../helpers/translator-budget";
 
 // Provider-scoped budgets: a provider's own connectTimeoutMs / stallTimeoutSec must win over the
 // global value on routed adapter sends, while a provider without an override keeps the global.
@@ -121,6 +123,73 @@ for (const row of [
     parent.abort(); await body?.catch(() => {});
     globalThis.fetch = originalFetch; clock.mockRestore(); intervals.forEach(clearInterval);
     clearKeyCooldowns(); release();
+  }
+});
+
+test.each(["chat", "messages"] as const)("direct %s watchdog counts partial upstream SSE frames as progress", async wire => {
+  const release = acquireOwnedSpendHome();
+  const config = fixtureConfig({ stallTimeoutSec: 40 }, { stallTimeoutSec: 1 });
+  const originalFetch = globalThis.fetch;
+  const originalInterval = globalThis.setInterval;
+  const beats: Array<() => void> = [];
+  const intervals: Array<ReturnType<typeof setInterval>> = [];
+  const clock = spyOn(globalThis, "setInterval").mockImplementation(((callback, delay, ...args) => {
+    if (delay !== 2_000) return originalInterval(callback, delay, ...args);
+    beats.push(callback as () => void);
+    const handle = originalInterval(() => {}, 2_000_000);
+    intervals.push(handle);
+    return handle;
+  }) as typeof setInterval);
+  const chunks = ['data: {"choices":[{"index":0,"delta":{"content":"split', ' frame'];
+  const waitingForLastChunk = Promise.withResolvers<void>();
+  const finishFrame = Promise.withResolvers<void>();
+  const encoder = new TextEncoder();
+  globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const partial = chunks.shift();
+      if (partial !== undefined) {
+        controller.enqueue(encoder.encode(partial));
+        return;
+      }
+      waitingForLastChunk.resolve();
+      await finishFrame.promise;
+      controller.enqueue(encoder.encode(' complete"},"finish_reason":null}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+      controller.close();
+    },
+  }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+  const parent = new AbortController();
+  const translatorBudget = createTestTranslatorBudget();
+  let body: Promise<string> | undefined;
+  try {
+    saveConfig(config);
+    const request = new Request("http://localhost/v1/responses", {
+      method: "POST", headers: { "content-type": "application/json" }, signal: parent.signal,
+      body: JSON.stringify({ model: "fixture/fixture-model", stream: true, input: "fixture" }),
+    });
+    const response = await handleResponses(request, config, { model: "", provider: "" }, {
+      inboundWire: wire === "chat" ? "chat" : "anthropic",
+      clientEncoder: { protocol: wire, stream: true, model: "fixture/fixture-model" },
+      translatorBudget,
+    });
+    body = response.text();
+    expect(clientWireOf(response)).toBe(wire);
+    await Promise.race([waitingForLastChunk.promise, body.then(text => { throw new Error(`never read both partial chunks: ${text}`); })]);
+    expect(beats).toHaveLength(1);
+    beats[0]!();
+    finishFrame.resolve();
+    const text = await body;
+    expect(text).not.toContain("upstream_stall_timeout");
+    expect(text).toContain("split frame complete");
+    expect(text).toContain(wire === "chat" ? "data: [DONE]" : "event: message_stop");
+  } finally {
+    parent.abort();
+    finishFrame.resolve();
+    await body?.catch(() => {});
+    globalThis.fetch = originalFetch;
+    clock.mockRestore();
+    intervals.forEach(clearInterval);
+    translatorBudget.dispose();
+    release();
   }
 });
 

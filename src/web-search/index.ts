@@ -156,6 +156,7 @@ export function planWebSearch(
     admission?: Pick<DataPlaneAdmission, "source">;
     codexAuthPolicy?: CodexAuthPolicyConfig;
     providerName?: string;
+    routedTransport?: "http" | "runTurn";
   } = {},
 ): SidecarPlan | undefined {
   if (!parsed._webSearch || isPassthrough) return undefined;
@@ -164,8 +165,9 @@ export function planWebSearch(
   if (cfg.enabled === false) return undefined;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const routedModelStallTimeoutMs = resolveRoutedModelStallTimeoutMs(cfg.routedModelStallTimeoutMs);
-  // Same `?? 200_000` default the server applies when threading connectTimeoutMs into the loop.
-  const connectTimeoutMs = providerConnectTimeoutMs(config, provider) ?? 200_000;
+  // Only the HTTP loop waits for response headers under this deadline.
+  const connectTimeoutMs = options.routedTransport === "runTurn"
+    ? undefined : providerConnectTimeoutMs(config, provider) ?? 200_000;
   // Shared auth state (#2188): presence only — backend PREFERENCE stays with
   // resolveSidecarBackend's explicit-or-openai contract.
   const backend = resolveSidecarBackend(cfg.backend);

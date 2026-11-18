@@ -156,6 +156,9 @@ export function createAdapterContinuations(
     sendBudgetExhausted,
   } = sendBudgetState;
 
+  let upstreamBodyProgress = 0;
+  const noteUpstreamBodyProgress = options.clientEncoder && (() => { upstreamBodyProgress++; });
+
   const continuationFailureEvent = (error: unknown): Extract<AdapterEvent, { type: "error" }> => {
     if (options.abortSignal?.aborted || upstream.signal.aborted) {
       return { type: "error", message: "client closed request during terminal continuation", status: 499 };
@@ -775,7 +778,8 @@ export function createAdapterContinuations(
           yield await adapterExchange.thinkingSignatureRecovery.projectHttpFailure(current, upstream.signal);
         } else if (nextParsed.stream) {
           yield* readResponseStreamWithInactivity(current, upstream.signal, bodyInactivityMs,
-            guarded => transportState.activeAdapter.parseStream(guarded, translatorBudget, logCtx.activeTierMetadata));
+            guarded => transportState.activeAdapter.parseStream(guarded, translatorBudget, logCtx.activeTierMetadata),
+            noteUpstreamBodyProgress);
         } else if (transportState.activeAdapter.parseResponse) {
           yield* await readResponseBodyWithInactivity(current, upstream.signal, bodyInactivityMs,
             guarded => transportState.activeAdapter.parseResponse!(guarded, translatorBudget, logCtx.activeTierMetadata));
@@ -832,6 +836,8 @@ export function createAdapterContinuations(
     fetchTerminalGuardContinuation,
     fetchGuardedEmptyCompletionRetry,
     isContinuationBodyStall: (event: AdapterEvent): boolean => continuationBodyStall in event,
+    noteUpstreamBodyProgress,
+    readUpstreamBodyProgress: () => upstreamBodyProgress,
   };
 }
 

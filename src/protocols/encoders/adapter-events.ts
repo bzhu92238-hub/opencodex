@@ -165,6 +165,8 @@ export interface AdapterEventEncodeOptions {
   freeformToolNames?: ReadonlySet<string>;
   toolSearchToolNames?: ReadonlySet<string>;
   stallTimeoutSec?: number;
+  /** Number of non-empty HTTP body chunks read across this turn's adapter legs. */
+  readUpstreamBodyProgress?: () => number;
   /**
    * Operator-trusted local upstream (loopback / private / `.local` / `.lan`): an unset budget
    * resolves to disabled there instead of the 300 s default, matching the bridge (#5876).
@@ -205,6 +207,7 @@ export function encodeAdapterEventStream(
   let gated = false;
   let emittedFrames = 0;
   let upstreamActivity = false;
+  let lastUpstreamBodyProgress = options.readUpstreamBodyProgress?.();
   let wireActivity = false;
   let stallTicks = 0;
   let beat: unknown;
@@ -893,7 +896,10 @@ export function encodeAdapterEventStream(
         if (closed || gated) return;
         if (localUpstream !== options.localUpstream) { localUpstream = options.localUpstream; stallTicks = 0; }
         const maxStallTicks = Math.ceil((resolveStallTimeoutSec(options.stallTimeoutSec, { localUpstream }) * 1000) / heartbeatMs);
-        if (upstreamActivity) {
+        const upstreamBodyProgress = options.readUpstreamBodyProgress?.();
+        const bodyAdvanced = upstreamBodyProgress !== lastUpstreamBodyProgress;
+        lastUpstreamBodyProgress = upstreamBodyProgress;
+        if (upstreamActivity || bodyAdvanced) {
           upstreamActivity = false;
           stallTicks = 0;
         } else if (maxStallTicks > 0 && ++stallTicks >= maxStallTicks) {
