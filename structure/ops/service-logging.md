@@ -17,6 +17,9 @@ validated provider and closed effort/capability fields, with no model field. Ope
 selection and cooldown keys remain internal. `tests/responses/chat-error-body-normalization.test.ts`
 covers failure, wait, last-resort, reprobe and effort diagnostic output.
 
+The combo's request outcome and its child's [sealed upstream refusal](../usage-client-attribution.md#credential-recovery-attempts)
+can have different statuses. Child finalization preserves the refusal's physical attempt.
+
 ## Retention
 
 Startup and once-per-minute checks rotate above 20 MiB. The previous archive
