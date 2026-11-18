@@ -635,7 +635,7 @@ export async function prepareAdapterExchange(
       preserveFailureResponse?: Response,
       staged?: CredentialReplay,
     ): Promise<Response | { failed: Response }> => {
-      const replay = staged ?? (credentialRecoveryStatus(recovery) === undefined ? undefined
+      const replay = staged ?? (!logCtx.activeAttempt?.sendCount || credentialRecoveryStatus(recovery) === undefined ? undefined
         : transportState.createCredentialReplayAttempt(lastSentRequest, upstreamResponse.status, recovery));
       let replacementAdmitted = false, dispatchConfirmed = false;
       // Only budgets without a physical observer need this legacy workflow report.
@@ -705,6 +705,16 @@ export async function prepareAdapterExchange(
         try {
           if (transportState.activeAdapter.fetchResponse) {
             if (!replay) transportState.noteRoutedAttemptSend(retryEstimate, recovery);
+            const commitReplayDispatch = () => {
+              if (!replay || dispatchConfirmed) return;
+              upstream.signal.throwIfAborted();
+              onDispatch?.();
+              dispatchConfirmed = true;
+              replay(retryRequest, transportState.activeAdapter.name);
+              replacementAdmitted = true;
+              lastSentRequest = retryRequest;
+            };
+            let adapterReportedSend = false;
             const producer = adapterDispatchBudget?.beginSpendProducer?.();
             try {
             return await withProviderRequestSlot(route.providerName, route.provider, route.modelId, upstream.signal, pacingSlot => {
@@ -715,6 +725,7 @@ export async function prepareAdapterExchange(
                 timeoutMs: sendConnectMs(),
                 sendBudget: adapterDispatchBudget,
                 onPhysicalSend: send => {
+                  if (replay) adapterReportedSend = true;
                   if (!replay && preserveFailureResponse) replacementAdmitted = true;
                   antigravityDenial.beforeSend(); noteAdapterPhysicalSend(retryEstimate, send);
                   chargeFastDowngradeWorkflowSend();
@@ -726,13 +737,7 @@ export async function prepareAdapterExchange(
                   pacingSlot,
                   dispatchOverride: oauthDispatch(retryRequest, parsed, "adapter", Boolean(replay)),
                   onPhysicalDispatch: () => {
-                    if (replay && !dispatchConfirmed) {
-                      upstream.signal.throwIfAborted();
-                      onDispatch?.();
-                      dispatchConfirmed = true;
-                      replay(retryRequest, transportState.activeAdapter.name);
-                      replacementAdmitted = true;
-                    }
+                    commitReplayDispatch();
                     lastSentRequest = retryRequest;
                   },
                   providerName: route.providerName,
@@ -740,6 +745,11 @@ export async function prepareAdapterExchange(
                   beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
                     ? createCodexAuthDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
                 }),
+              }).then(response => {
+                // An adapter dispatching through its own executor can supply its own receipt.
+                // Its returned response confirms the send survived any later adapter guard.
+                if (adapterReportedSend) commitReplayDispatch();
+                return response;
               });
             });
             } finally { producer?.close(); }
@@ -1389,6 +1399,7 @@ export async function prepareAdapterExchange(
           hop.permit?.release();
           break;
         }
+        const replay = transportState.createCredentialReplayAttempt(lastSentRequest, upstreamResponse.status, "oauth-account-429");
         try {
           const admitted = await commitResolvedOAuthSelection(await anthropicRoutingFor(anthropicInstance).getAnthropicPoolAccessSnapshot(nextAccountId));
           if (!admitted) throw new Error("OAuth selection changed during recovery");
@@ -1521,7 +1532,7 @@ export async function prepareAdapterExchange(
             // exhausted request and stops sending on.
             result = await rebuildAndRefetch("oauth-account-429", () => {
               if (!adapterOwnsDispatch && hop.permit?.use() === false) throw new SendBudgetExhaustedError();
-            }, upstreamResponse);
+            }, upstreamResponse, replay);
           } finally {
             sendBudgetState.pendingHopPermit = undefined;
           }
