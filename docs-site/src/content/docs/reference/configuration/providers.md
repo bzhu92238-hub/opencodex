@@ -472,7 +472,9 @@ Provider registration and replacement (`POST /api/providers`) validate `response
 
 An unrelated provider replacement that omits `connectTimeoutMs` or `stallTimeoutSec` retains the stored override. Send `null` for either field in `PATCH /api/providers?name=<provider>` to clear that override and inherit the global value. A supplied value outside the field's integer range returns `400` without saving the patch.
 
-The stall override covers streaming `runTurn` requests. Buffered `runTurn` has no provider stall watchdog. The image/video bridge uses its default deadlines for zero values, and the web-search bridge keeps its own watchdog sized to cover its component deadlines. Native Chat/Messages and compact use global settings. Responses passthrough generally uses global settings, with an exception for the shared OAuth response-header dispatch.
+The header override applies to routed HTTP adapter sends, including the model requests made by the image/video and web-search bridges. Each `runTurn` adapter owns its transport deadlines. The stall override covers streaming `runTurn` delivery. Buffered `runTurn` has no provider stall watchdog.
+
+In the image/video bridge, `0` disables the corresponding model timer. Image and video generation keep their own deadlines. The web-search bridge retains a positive outer watchdog sized to cover its component deadlines, even with a provider stall override of `0`. Responses passthrough, native Chat/Messages, and compact use global settings.
 
 For example, this applies a provider-wide concurrency cap and a stricter cap to one exact model, without configuring an interval:
 

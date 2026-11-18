@@ -7,6 +7,7 @@ import { planWebSearch } from "../../src/web-search";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { clearKeyCooldowns } from "../../src/providers/key-failover";
+import { repoPath } from "../helpers/repo-root";
 
 // Provider-scoped budgets: a provider's own connectTimeoutMs / stallTimeoutSec must win over the
 // global value on routed adapter sends, while a provider without an override keeps the global.
@@ -22,6 +23,8 @@ for (const row of [
   { name: "provider override wins", globalMs: 23_011, providerMs: 17_013, armed: [17_013] },
   { name: "provider without override keeps the global", globalMs: 23_011, providerMs: undefined, armed: [23_011] },
   { name: "provider 0 disables only its own header clock", globalMs: 23_011, providerMs: 0, armed: [] },
+  { name: "passthrough keeps the global over a positive override", globalMs: 23_011, providerMs: 17_013, armed: [23_011], passthrough: true },
+  { name: "passthrough keeps the global over a zero override", globalMs: 23_011, providerMs: 0, armed: [23_011], passthrough: true },
 ]) test(`Responses header deadline: ${row.name}`, async () => {
   const release = acquireOwnedSpendHome();
   clearKeyCooldowns();
@@ -43,7 +46,10 @@ for (const row of [
     entered.resolve();
     return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
   }) as typeof fetch;
-  const config = fixtureConfig({ connectTimeoutMs: row.globalMs }, row.providerMs === undefined ? {} : { connectTimeoutMs: row.providerMs });
+  const config = fixtureConfig({ connectTimeoutMs: row.globalMs }, {
+    ...(row.passthrough ? { adapter: "openai-responses" } : {}),
+    ...(row.providerMs === undefined ? {} : { connectTimeoutMs: row.providerMs }),
+  });
   saveConfig(config);
   const parent = new AbortController();
   const pending = handleResponses(new Request("http://localhost/v1/responses", {
@@ -142,4 +148,13 @@ test("management writes reject malformed provider budgets and accept 0 or a posi
   for (const value of [0, 1, 120_000]) {
     expect(providerManagementConfigError("fixture", { ...provider, connectTimeoutMs: value, stallTimeoutSec: value === 120_000 ? 600 : value })).toBeNull();
   }
+});
+
+test("provider timeout API docs distinguish HTTP headers from runTurn inactivity", async () => {
+  const source = await Bun.file(repoPath("src/types/provider.ts")).text();
+  const headerDoc = source.match(/\/\*\*\s*\n\s*\* Per-provider override of the global `connectTimeoutMs`[^]*?\*\/\s*connectTimeoutMs\?: number;/)?.[0];
+  const stallDoc = source.match(/\/\*\*\s*\n\s*\* Per-provider override of the global `stallTimeoutSec`[^]*?\*\/\s*stallTimeoutSec\?: number;/)?.[0];
+  expect(headerDoc).toMatch(/\brouted HTTP\b/);
+  expect(headerDoc).toMatch(/\brunTurn owns its transport\b/);
+  expect(stallDoc).toMatch(/\bstreaming runTurn\b/);
 });

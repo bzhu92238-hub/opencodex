@@ -992,8 +992,9 @@ export async function prepareResponsesTransport(
                   }) : {}) },
               { providerName: route.providerName, provider: route.provider },
             )) as typeof globalThis.fetch;
+            const connectTimeoutMs = owner === "passthrough" ? config.connectTimeoutMs : providerConnectTimeoutMs(config, route.provider);
             response = await fetchWithHeaderTimeout(target, dispatchInit, dispatchInit.signal ?? options.abortSignal ?? req.signal,
-              resolveConnectTimeoutMs(providerConnectTimeoutMs(config, route.provider), { localUpstream: isLocalUpstream(target) }), requestParsed.stream, physicalFetch);
+              resolveConnectTimeoutMs(connectTimeoutMs, { localUpstream: isLocalUpstream(target) }), requestParsed.stream, physicalFetch);
           } finally { releaseFamily(); }
           // Observe each physical response before retries replace it. The binding belongs to
           // this dispatch, so a manual switch cannot file A's headers against B. Header

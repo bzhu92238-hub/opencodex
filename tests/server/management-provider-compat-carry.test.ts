@@ -334,6 +334,29 @@ describe("an overwrite that moves the provider carries none of it", () => {
 });
 
 describe("PATCH and POST validate the settings they name", () => {
+  test("canonical OpenAI POST accepts timeout overrides and validates each before saving", async () => {
+    const provider = {
+      adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward", codexAccountMode: "direct",
+    } as const;
+    await withServer({ openai: provider }, async url => {
+      for (const overrides of [
+        { connectTimeoutMs: 0, stallTimeoutSec: 600 },
+        { connectTimeoutMs: 420_000, stallTimeoutSec: 0 },
+      ]) {
+        const response = await send(url, "/api/providers", "POST", { name: "openai", provider: { ...provider, ...overrides } });
+        expect(response.status).toBe(200);
+        expect(loadConfig().providers.openai).toMatchObject({ ...provider, ...overrides });
+      }
+      for (const field of ["connectTimeoutMs", "stallTimeoutSec"] as const) {
+        const response = await send(url, "/api/providers", "POST", { name: "openai", provider: { ...provider, [field]: -1 } });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: expect.stringContaining(field) });
+        expect(loadConfig().providers.openai).toMatchObject({ connectTimeoutMs: 420_000, stallTimeoutSec: 0 });
+      }
+    });
+  });
+
   test("POST retains omitted provider timeout overrides and honors an explicit replacement", async () => {
     const provider = { adapter: "openai-chat", baseUrl: BASE_URL, apiKey: "sk-relay" } as const;
     await withServer({ relay: { ...provider, connectTimeoutMs: 0, stallTimeoutSec: 600 } }, async url => {

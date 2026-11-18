@@ -952,6 +952,9 @@ export function providerManagementConfigError(
     // forwardClientHeaders is an editor-managed request-metadata overlay. It is validated
     // separately below and must not make an otherwise canonical OpenAI provider fail the seed check.
     delete canonicalCandidate.forwardClientHeaders;
+    // Timeout overrides are validated on raw below and are independent of the canonical seed.
+    delete canonicalCandidate.connectTimeoutMs;
+    delete canonicalCandidate.stallTimeoutSec;
     // Canonical ChatGPT keeps WebSocket as the default, but an operator may
     // select the existing HTTP/SSE path without changing its auth or endpoint.
     if (raw.upstreamWebsocket !== undefined) {

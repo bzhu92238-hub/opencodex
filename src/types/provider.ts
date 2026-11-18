@@ -355,15 +355,17 @@ export interface OcxProviderConfig {
   requestPacing?: ProviderRequestPacingConfig;
   /**
    * Per-provider override of the global `connectTimeoutMs` (response-header arrival deadline) for
-   * this provider's routed adapter, runTurn and image/web-search sidecar sends. Same semantics as
-   * the global value: a positive value applies verbatim, `0` disables the header deadline for this
-   * provider only, and unset inherits the global value and its local/public default.
+   * routed HTTP adapter sends, including routed model sends in the image/video and web-search
+   * bridges. A runTurn owns its transport and uses adapter-specific deadlines.
+   * A positive value applies verbatim, `0` disables the header deadline on covered paths,
+   * and an omitted value inherits the global setting.
    */
   connectTimeoutMs?: number;
   /**
-   * Per-provider override of the global `stallTimeoutSec` (body inactivity budget) for the same
-   * paths as {@link connectTimeoutMs}. A positive value applies verbatim, `0` disables the
-   * watchdog for this provider only, and unset inherits the global value.
+   * Per-provider override of the global `stallTimeoutSec` for routed HTTP responses, streaming runTurn
+   * delivery, and inactivity in the image/video bridge. A positive value sets the inactivity budget,
+   * `0` disables it on covered paths, and an omitted value inherits the global setting.
+   * The web-search plan also uses the setting to size its independent bridge watchdog.
    */
   stallTimeoutSec?: number;
   /** Cursor MCP compatibility bounds; positive integers when configured. */
