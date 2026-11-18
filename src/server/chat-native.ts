@@ -1,3 +1,4 @@
+import { sealCredentialRefusal } from "./credential-recovery-attempt";
 import { recordUpstreamProviderErrorDetail } from "./request-log-failure-detail";
 import { normalizeNativeChatContent } from "../adapters/openai-chat/native-content";
 import { attachComboFailureEvidence, ownedChatErrorPayload, type ClientErrorContract } from "../lib/client-error-body";
@@ -84,7 +85,6 @@ import {
   recordKeyAttemptFailure,
   recordKeyWireAttemptUsage,
   recordFirstOutput,
-  recordAttemptCredentialSource,
   type RequestLogContext,
 } from "./request-log";
 import { chatResponseHasUndeclaredToolCalls, UNDECLARED_CHAT_TOOL_MESSAGE, jsonCompletionSse, nativeChatSse, structuredError, usageFromChat } from "./chat-native-sse";
@@ -400,7 +400,6 @@ export async function runNativeChatAttempt(
   };
   const buildActiveRequest = () => {
     bindNativeChatReplayScope(replayScope, activeProvider, route.providerName, route.modelId);
-    recordAttemptCredentialSource(attempt, route.providerName, activeProvider, activeAdapter.name);
     const request = buildOpenAIChatPassthroughRequest(
       activeProvider,
       execution.chatBody,
@@ -579,7 +578,6 @@ export async function runNativeChatAttempt(
                 // before the wire refunds the booking rather than charging it.
                 if (physicalBudget.spendEnforced) initialSendStarted = true;
                 else if (!comboReceipt) settleNonEnforcedSend(request.url);
-                noteProviderAttemptSend(logCtx, route.providerName, activeProvider, logCtx.usageLogInputTokens, transportRecovery ?? recovery);
                 // A reselected provider transport is still a physical send: the connection policy
                 // and manual-redirect ownership wrap the selected implementation (#4992).
                 const physicalFetch = ((input, physicalInit) => sendWithConnectionPolicy(
@@ -592,7 +590,9 @@ export async function runNativeChatAttempt(
                   request.url,
                   applyUpstreamRecoveryInit({
                     ...init, method: request.method, headers, body: request.body,
-                    ...physicalSendObserverInit(observeAutoPause, request.url),
+                    ...physicalSendObserverInit(observeAutoPause, request.url, () => {
+                      noteProviderAttemptSend(logCtx, route.providerName, activeProvider, logCtx.usageLogInputTokens, transportRecovery ?? recovery);
+                    }),
                   }, transportRecovery),
                   init.signal ?? upstream.signal,
                   resolveConnectTimeoutMs(config.connectTimeoutMs, { localUpstream }),
@@ -645,6 +645,7 @@ export async function runNativeChatAttempt(
         const fresh = resolveCurrentProviderApiKeyTransport(config, route.providerName, { ...activeProvider, _apiKeyAttempt: undefined });
         const next = fresh && (selectProactiveApiKeyTransport(config, route.providerName, fresh) ?? fresh);
         if (!next) break;
+        sealCredentialRefusal(logCtx, response.status, "key-401");
         try { void response.body?.cancel().catch(() => {}); } catch { /* closed */ }
         activeProvider = next;
         stampApiKeyAccountLabel(logCtx, route.providerName, activeProvider);
@@ -693,6 +694,8 @@ export async function runNativeChatAttempt(
       // Keep that bookkeeping when this request has spent its final send, but preserve the
       // terminal 429 body and do not dispatch with the replacement credential.
       if (!transientSendAvailable()) break;
+      const recovery = failureStatus === 401 ? "key-401" : "key-429";
+      sealCredentialRefusal(logCtx, failureStatus, recovery);
       try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
       activeProvider = rotated;
       stampApiKeyAccountLabel(logCtx, route.providerName, activeProvider);
@@ -700,7 +703,7 @@ export async function runNativeChatAttempt(
       releaseRetainedRequest();
       activeRequest = buildActiveRequest();
       retainRequest(activeRequest);
-      response = await send(activeRequest, failureStatus === 401 ? "key-401" : "key-429");
+      response = await send(activeRequest, recovery);
     }
       if (response !== priorResponse && wasAccountAutoPaused(response)) continue;
       break;

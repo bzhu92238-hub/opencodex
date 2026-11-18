@@ -55,6 +55,7 @@ import { namespacedToolName, toolChoiceToolPredicate } from "../../types";
 import { providerFetch } from "./fetch-helpers";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import { recordAdapterReasoning, recordAdapterTier } from "../request-log";
+import { sealCredentialRefusal } from "../credential-recovery-attempt";
 import { assignNativeLogConversationId, normalizeLogConversationId } from "../request-log-conversation";
 import { attemptAccountChanged } from "../request-log-account-rotation";
 import { rememberResponseState } from "../../responses/state";
@@ -99,7 +100,7 @@ export async function executeResponsesSidecars(
     | "resolveSelectionAdapter"
     | "resolveCopilotSelection"
     | "oauthDispatch"
-    | "noteRoutedAttemptSend"
+    | "noteRoutedAttemptSend" | "createCredentialReplayAttempt"
     | "bindKeyUsageFromBridge"
   >,
   sidecarState: Pick<ResponsesSidecarAuth, "routedCompaction" | "openAiSidecar">,
@@ -263,6 +264,20 @@ export async function executeResponsesSidecars(
     void response.body?.cancel().catch(() => {});
     releaseSearchProbeLease();
     return admissionModelDeniedResponse(projectAdmissionModelDeniedLog(sidecarScopeDenial, logCtx));
+  };
+  let lastSidecarRequest: AdapterRequest | undefined;
+  let pendingSidecarReplay: { refused: AdapterRequest; status: number; kind: AttemptRecoveryKind; dispatched?: boolean } | undefined;
+  let sidecarRetryKind: AttemptRecoveryKind | undefined;
+  const observeSidecarBuild = (request: AdapterRequest): void => {
+    if (pendingSidecarReplay && !pendingSidecarReplay.dispatched) return;
+    pendingSidecarReplay = undefined;
+    if (request.usageLog?.inputTokens !== undefined) logCtx.usageLogInputTokens = request.usageLog.inputTokens;
+    recordAdapterReasoning(logCtx, request);
+    recordAdapterTier(logCtx, request);
+  };
+  const noteSidecarAttempt = (recovery?: AttemptRecoveryKind): void => {
+    sidecarRetryKind = recovery;
+    if (!pendingSidecarReplay) transportState.noteRoutedAttemptSend(logCtx.usageLogInputTokens, recovery);
   };
   /** Admit a replacement credential, or leave the loop's original refusal authoritative. */
   const rotateSidecarProviderOn429 = async (
@@ -477,6 +492,9 @@ export async function executeResponsesSidecars(
       adapterName: rotatedAdapter.name,
       ...(antigravityVerification ? { oauthCredentialSnapshot: transportState.replayOAuthCredentialSnapshot } : {}),
     });
+    if (lastSidecarRequest && originalResponse) {
+      pendingSidecarReplay = { refused: lastSidecarRequest, status: originalResponse.status, kind: recoveryKind };
+    }
     return { adapter: rotatedAdapter, recoveryKind };
   };
   // One guard follows the active sidecar across all iterations. Enforced spend has no
@@ -509,6 +527,32 @@ export async function executeResponsesSidecars(
         }
       }
     } };
+  const sidecarRequestFetch = (request: AdapterRequest, iterParsed: OcxParsedRequest, adapter: ProviderAdapter, recovery?: AttemptRecoveryKind) => {
+    const staged = pendingSidecarReplay?.kind === recovery ? pendingSidecarReplay : undefined;
+    if (!staged) pendingSidecarReplay = undefined;
+    const commit = staged && transportState.createCredentialReplayAttempt(staged.refused, staged.status, staged.kind);
+    const physicalOptions = { ...sidecarBudget.fetchOptions(adapter), ...thinkingReceipt(request, adapter, recovery) };
+    let published = false;
+    return providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+      dispatchOverride: oauthDispatch(request, iterParsed, "adapter", Boolean(commit)),
+      providerName: route.providerName, modelId: route.modelId, ...physicalOptions,
+      onPhysicalDispatch: () => {
+        physicalOptions.onPhysicalDispatch?.();
+        if (commit && (!adapter.fetchResponse || !published)) {
+          commit(request, adapter.name, sidecarRetryKind === recovery ? undefined : sidecarRetryKind);
+          staged.dispatched = published = true;
+        }
+        lastSidecarRequest = request;
+      },
+    });
+  };
+  const releaseSidecarHop = (): void => {
+    if (pendingSidecarReplay && !pendingSidecarReplay.dispatched) {
+      sealCredentialRefusal(logCtx, pendingSidecarReplay.status, pendingSidecarReplay.kind);
+    }
+    pendingSidecarReplay = undefined;
+    sidecarBudget.releaseUnsentHop();
+  };
   // A loop's hidden rounds before a rotation were spent by the account it left. Bill them to that
   // account's attempt while it is still open; the next send seals it. Declined when that send
   // keeps the account (no new attempt), so the loop's final total still carries them.
@@ -581,12 +625,11 @@ export async function executeResponsesSidecars(
       incomingMeta: { headers: requestState.selectedForwardHeaders, providerName: route.providerName, abortSignal: options.abortSignal, translatorBudget, ...(options.comboInitialSend ? { providerFetch: imageProviderFetch } : {}), ...sidecarBudget.incomingMeta },
       onProducerStart: sidecarBudget.takeProducerOwnership,
       onProducerEnd: sidecarBudget.release,
-      onIterationEnd: sidecarBudget.releaseUnsentHop,
+      onIterationEnd: releaseSidecarHop,
       ...(imgPlan ? { plan: imgPlan } : {}),
       ...(vidPlan ? { videoPlan: vidPlan } : {}),
       forwardHeaders: requestState.selectedForwardHeaders,
-      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
-        transportState.noteRoutedAttemptSend(logCtx.usageLogInputTokens, recovery),
+      onAttemptSend: noteSidecarAttempt,
       abortSignal: options.abortSignal,
       maxRounds: imgPlan && vidPlan
         ? clampImageMaxRounds(Math.min(config.images?.maxRounds ?? 3, config.images?.videoMaxRounds ?? 2))
@@ -597,19 +640,11 @@ export async function executeResponsesSidecars(
       stallTimeoutSec: config.stallTimeoutSec, proxyErrorContext: logCtx,
       waitForRequestSlot: imageProviderFetch.waitForPacing,
       fetchImpl: imageProviderFetch.unpacedFetch ?? imageProviderFetch,
-      fetchForRequest: (request, iterParsed, adapter, recovery) => {
-        const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-          dispatchOverride: oauthDispatch(request, iterParsed),
-          providerName: route.providerName, modelId: route.modelId, ...sidecarBudget.fetchOptions(adapter),
-          ...thinkingReceipt(request, adapter, recovery),
-        });
+      fetchForRequest: (...args) => {
+        const fetch = sidecarRequestFetch(...args);
         return fetch.unpacedFetch ?? fetch;
       },
-      onRequestBuilt: request => {
-        if (typeof request.usageLog?.inputTokens === "number") logCtx.usageLogInputTokens = request.usageLog.inputTokens;
-        recordAdapterReasoning(logCtx, request);
-        recordAdapterTier(logCtx, request);
-      },
+      onRequestBuilt: observeSidecarBuild,
       ...(vidPlan?.timeoutMs ? { videoTimeoutMs: vidPlan.timeoutMs } : {}),
       onUsage: usage => {
         // Cursor may assign _cursorConversationId inside the image loop's first runTurn;
@@ -709,12 +744,8 @@ export async function executeResponsesSidecars(
       chatRawReasoningVisible: options.chatRawReasoningVisible,
       ...(transportState.adapter.name === "anthropic" ? { thinkingRecovery } : {}),
       clientToolCatalogRestriction: route.provider.authMode === "forward" ? undefined : requestState.clientToolCatalogRestriction,
-      onIterationEnd: sidecarBudget.releaseUnsentHop,
-      fetchForRequest: (request, iterParsed, adapter, recovery) => providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-        dispatchOverride: oauthDispatch(request, iterParsed),
-        providerName: route.providerName, modelId: route.modelId, ...sidecarBudget.fetchOptions(adapter),
-        ...thinkingReceipt(request, adapter, recovery),
-      }),
+      onIterationEnd: releaseSidecarHop,
+      fetchForRequest: sidecarRequestFetch,
       incomingMeta: {
         headers: requestState.selectedForwardHeaders,
         providerName: route.providerName,
@@ -744,13 +775,8 @@ export async function executeResponsesSidecars(
       escapeMemoryCitationTags: inboundWire !== "chat" && inboundWire !== "anthropic",
       abortSignal: options.abortSignal,
       onFirstOutput: noteSidecarOutput,
-      onRequestBuilt: request => {
-        if (typeof request.usageLog?.inputTokens === "number") logCtx.usageLogInputTokens = request.usageLog.inputTokens;
-        recordAdapterReasoning(logCtx, request);
-        recordAdapterTier(logCtx, request);
-      },
-      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
-        transportState.noteRoutedAttemptSend(logCtx.usageLogInputTokens, recovery),
+      onRequestBuilt: observeSidecarBuild,
+      onAttemptSend: noteSidecarAttempt,
       onUsage: usage => {
         transportState.bindKeyUsageFromBridge(usage);
       },
@@ -766,6 +792,7 @@ export async function executeResponsesSidecars(
         // The next Antigravity adapter dispatch claims this permit. If request construction,
         // admission or cancellation stopped it first, return the unused send allowance.
         const permit = sendBudgetState.pendingHopPermit;
+        releaseSidecarHop();
         sendBudgetState.pendingHopPermit = undefined;
         permit?.release();
       } } : {}),
